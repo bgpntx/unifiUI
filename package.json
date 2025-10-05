@@ -1,0 +1,13 @@
+{
+    "name": "unifi-udr-local-gui",
+    "private": true,
+    "type": "module",
+    "dependencies": {
+      "cors": "^2.8.5",
+      "express": "^4.19.2",
+      "node-fetch": "^3.3.2"
+    },
+    "scripts": {
+      "start": "node server.js"
+    }
+  }

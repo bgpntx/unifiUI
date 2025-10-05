@@ -1,0 +1,516 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>UniFi UDR – Local GUI</title>
+  <style>
+    :root { --bg:#0b0f13; --fg:#e8edf2; --muted:#9aa6b2; --card:#121821; --line:#1e2835; --fs:14px; --cell-pad-y:8px; --cell-pad-x:10px; --tblH:50vh; }
+    *{ box-sizing:border-box }
+    body{ margin:0; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial; background:var(--bg); color:var(--fg); font-size: var(--fs); }
+    header{ padding:16px 20px; border-bottom:1px solid var(--line); background:linear-gradient(180deg, #0d131a, #0b0f13); position:sticky; top:0; z-index:10; }
+    h1{ font-size:18px; margin:0 0 6px; }
+    .sub{ color:var(--muted); font-size:12px }
+    main{ padding:20px; display:grid; grid-template-columns: 1fr; gap:16px; align-items:stretch; }
+    @media(min-width:1100px){
+      main{
+        grid-template-columns: 1fr 1fr;           /* equal width columns */
+        grid-template-rows: auto 1fr;             /* top row (Sites/Controls) auto, bottom row (Devices/Clients) fills */
+        grid-template-areas:
+          "sites controls"
+          "devices clients";
+      }
+    }
+    .card{ background:var(--card); border:1px solid var(--line); border-radius:14px; padding:14px; height:100%; }
+    .row{ display:flex; gap:8px; flex-wrap:wrap; align-items:center }
+    select, input, button{ background:#0f1520; color:var(--fg); border:1px solid var(--line); border-radius:10px; padding:8px 10px; }
+    button{ cursor:pointer }
+    button.primary{ background:#1b7cff; border-color:#1b7cff }
+    table{ width:100%; border-collapse:collapse; }
+    th, td{ padding: var(--cell-pad-y) var(--cell-pad-x); border-bottom:1px dashed var(--line); font-size: inherit; }
+    th{ text-align:left; color:#b6c3d1; font-weight:600; position:sticky; top:0; background:var(--card); }
+    .muted{ color:var(--muted) }
+    .status{ display:inline-block; padding:2px 8px; border-radius:999px; font-size:12px; border:1px solid var(--line) }
+    .ok{ background:#12351f; color:#74ffa0; border-color:#1b4d2d }
+    .bad{ background:#3a1414; color:#ff9595; border-color:#5a2525 }
+    .warn{ background:#33260f; color:#ffd27e; border-color:#5b4319 }
+    .banner{ border:1px solid #5b2a2a; background:#2a0f11; padding:10px; border-radius:10px; color:#ffb3b3; margin-bottom:10px; display:none }
+    .grid{ display:grid; gap:8px }
+    .two{ grid-template-columns: 1fr 1fr }
+    .three{ grid-template-columns: repeat(3,1fr) }
+    .right{ text-align:right }
+    .small{ font-size:12px }
+    .kbd{ border:1px solid var(--line); border-bottom-width:2px; padding:1px 6px; border-radius:6px; font-family:ui-monospace, SFMono-Regular, Menlo, monospace }
+    #wanChart{ display:block; }
+    /* Modal */
+    .modal-backdrop{ position:fixed; inset:0; background:rgba(0,0,0,0.55); display:none; align-items:center; justify-content:center; z-index:100; }
+    .modal{ background:var(--card); border:1px solid var(--line); border-radius:14px; width:min(720px, 92vw); max-height:80vh; overflow:auto; box-shadow:0 10px 30px rgba(0,0,0,0.5); }
+    .modal header{ display:flex; align-items:center; justify-content:space-between; padding:12px 16px; border-bottom:1px solid var(--line); position:sticky; top:0; background:var(--card); }
+    .modal h4{ margin:0; font-size:16px; }
+    .modal .body{ padding:12px 16px; }
+    .close-x{ border:none; background:transparent; color:var(--fg); font-size:18px; cursor:pointer; }
+    .kv{ display:grid; grid-template-columns: 160px 1fr; gap:6px 12px; }
+    .kv div{ padding:4px 0; border-bottom:1px dashed var(--line); }
+    .kv div.k{ color:var(--muted); }
+    /* Compact density mode */
+    body.compact { --fs:12px; --cell-pad-y:4px; --cell-pad-x:8px; }
+    .shrink * { font-size: 0.95em; }
+  </style>
+</head>
+<body>
+<header>
+  <h1>UniFi UDR – Local GUI</h1>
+  <div class="sub">Integration v1 via local proxy · Keys live server‑side · <span class="kbd">R</span> refreshes</div>
+</header>
+<main>
+  <section class="card" id="panel-internet" style="grid-column: 1 / -1;">
+    <h3>Internet</h3>
+    <div class="row" style="margin-bottom:8px">
+      <span class="muted small">WAN</span>
+      <span id="wanIp" class="small" style="margin-left:6px"></span>
+      <span id="wanStatus" class="small" style="margin-left:auto"></span>
+    </div>
+    <div class="row" style="margin-bottom:6px">
+      <div class="small muted">Down:</div><div id="rxNow" class="small">—</div>
+      <div class="small muted" style="margin-left:12px">Up:</div><div id="txNow" class="small">—</div>
+      <button id="btnToggleGraph" class="small" style="margin-left:auto">Pause</button>
+    </div>
+    <canvas id="wanChart" height="120" style="width:100%"></canvas>
+  </section>
+  <section class="card" id="panel-sites" style="grid-area: sites">
+    <h3>Sites</h3>
+    <div class="row" style="margin-bottom:8px">
+      <button id="btnLoadSites">Load Sites</button>
+      <select id="siteSelect"></select>
+      <button id="btnSetSite" title="Use selected site as default on server">Set Default Site</button>
+      <span class="muted small" id="siteInfo"></span>
+    </div>
+    <pre id="sitesOut" class="small muted">Click “Load Sites”</pre>
+  </section>
+
+  <section class="card" id="panel-controls" style="grid-area: controls">
+    <h3>Controls</h3>
+    <div class="grid two">
+      <div>
+        <div class="small muted">Auto‑refresh</div>
+        <div class="row">
+          <input type="number" id="refreshSec" value="10" style="width:100px" />
+          <button id="btnAuto">Start</button>
+        </div>
+      </div>
+      <div>
+        <div class="small muted">Client search</div>
+        <input id="clientSearch" placeholder="MAC, hostname, IP…" />
+      </div>
+      <div class="shrink">
+        <div class="small muted">Layout & scaling</div>
+        <div class="row">
+          <label class="small muted">Density
+            <select id="densitySelect">
+              <option value="comfortable">Comfortable</option>
+              <option value="compact">Compact</option>
+            </select>
+          </label>
+        </div>
+      </div>
+    </div>
+    <div id="banner" class="banner"></div>
+  </section>
+
+  <section class="card" id="panel-devices" style="grid-area: devices">
+    <h3>Devices</h3>
+    <div class="row" style="margin-bottom:6px">
+      <input id="deviceFilter" placeholder="model, name…" />
+      <button id="btnLoadDevices">Refresh</button>
+      <button id="btnDbgDev" class="small">Show raw</button>
+      <span class="muted small" id="devCount"></span>
+    </div>
+    <pre id="dbgDevices" class="small muted" style="display:none; max-height:18vh; overflow:auto"></pre>
+    <div style="max-height: var(--tblH); overflow:auto">
+      <table id="devicesTbl">
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>Model</th>
+            <th>MAC</th>
+            <th>IP</th>
+            <th class="right">Status</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="card" id="panel-clients" style="grid-area: clients">
+    <h3>Clients</h3>
+    <div class="row" style="margin-bottom:6px">
+      <label class="small muted"><input type="checkbox" id="onlyOnline" checked> only online</label>
+      <button id="btnLoadClients">Refresh</button>
+      <button id="btnDbgCli" class="small">Show raw</button>
+      <span class="muted small" id="cliCount"></span>
+    </div>
+    <pre id="dbgClients" class="small muted" style="display:none; max-height:18vh; overflow:auto"></pre>
+    <div style="max-height: var(--tblH); overflow:auto">
+      <table id="clientsTbl">
+        <thead>
+          <tr>
+            <th>Hostname</th>
+            <th>MAC</th>
+            <th>IP</th>
+            <th>RSSI</th>
+            <th>Uplink</th>
+            <th class="right">Actions</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+</main>
+
+<script>
+  const $ = (s, x=document) => x.querySelector(s);
+  const $$ = (s, x=document) => Array.from(x.querySelectorAll(s));
+  const outSites = $('#sitesOut');
+  const banner = $('#banner');
+
+  let autoTimer = null;
+
+  // caches of last payloads for quick lookup
+  let LAST_CLIENTS = [];
+  let LAST_DEVICES = [];
+
+  // UI scaling controls
+  const densSel = document.getElementById('densitySelect');
+
+  if (densSel){
+    densSel.addEventListener('change', ()=>{
+      document.body.classList.toggle('compact', densSel.value === 'compact');
+    });
+  }
+
+  function showBanner(msg){ banner.textContent = msg; banner.style.display = 'block'; setTimeout(()=> banner.style.display='none', 4000); }
+  function fmt(v){ return v ?? '' }
+  function contains(hay, needle){ return (hay||'').toLowerCase().includes((needle||'').toLowerCase()); }
+
+  // Heuristic: different firmware expose different flags; also fall back to recent lastSeen
+  function isClientOnline(c){
+    if (!c) return false;
+    // Explicit truthy flags or states
+    if (c.isOnline === true || c.isConnected === true || c.online === true) return true;
+    if (c.state === 'ONLINE' || c.connectionState === 'CONNECTED') return true;
+
+    // In your payload, connected clients have no `disconnectedAt`. Treat that as online.
+    if (c.disconnectedAt == null) return true;
+
+    // Fallbacks for older schemas
+    const now = Date.now();
+    const toMs = (v) => (v == null ? null : (v > 1e12 ? v : v * 1000));
+    const lastSeenMs = toMs(c.lastSeen ?? c.lastSeenTime ?? c.lastSeenTimestamp);
+    const connectedAtMs = Number.isFinite(Date.parse(c.connectedAt || '')) ? Date.parse(c.connectedAt) : null;
+    const disconnectedAtMs = Number.isFinite(Date.parse(c.disconnectedAt || '')) ? Number.isFinite(Date.parse(c.disconnectedAt)) ? Date.parse(c.disconnectedAt) : null : null;
+
+    const lastActive = Math.max(lastSeenMs ?? -Infinity, connectedAtMs ?? -Infinity);
+    const FRESH_MS = 30 * 60 * 1000; // widen to 30 min just in case
+    if (Number.isFinite(lastActive)) {
+      const fresh = (now - lastActive) < FRESH_MS;
+      const newerDisconnect = Number.isFinite(disconnectedAtMs) && disconnectedAtMs >= lastActive;
+      if (fresh && !newerDisconnect) return true;
+    }
+
+    if (c.ipAddress && Number.isFinite(connectedAtMs) && (now - connectedAtMs) < (7*24*60*60*1000)) return true;
+
+    return false;
+  }
+
+  function isDeviceConnected(d){
+    if (!d) return false;
+    if (d.isConnected === true || d.up === true || d.connected === true || d.connectionState === 'CONNECTED') return true;
+    if (d.state === 'ONLINE') return true; // string state variant
+    if (typeof d.state === 'number' && d.state > 0) return true; // numeric variant
+    const lastRaw = d.lastSeen ?? d.lastSeenTime ?? d.lastSeenTimestamp ?? d.last_seen;
+    if (lastRaw != null){
+      const ms = lastRaw > 1e12 ? lastRaw : lastRaw * 1000;
+      if (!Number.isNaN(ms) && (Date.now() - ms) < (5*60*1000)) return true;
+    }
+    return false;
+  }
+  function pick(...alts){ for (const k of alts){ if (k !== undefined && k !== null && k !== '') return k; } return ''; }
+
+  // ===== WAN chart helpers =====
+  function fmtRate(bps){
+    if (bps == null) return '—';
+    const kb = bps/1000, mb = kb/1000, gb = mb/1000;
+    if (gb >= 1) return gb.toFixed(2) + ' GB/s';
+    if (mb >= 1) return mb.toFixed(2) + ' MB/s';
+    if (kb >= 1) return kb.toFixed(0) + ' kB/s';
+    return bps.toFixed(0) + ' B/s';
+  }
+  const WAN_POINTS = 60; // ~last minute @ 1Hz
+  const wanSeries = { rx: [], tx: [], ts: [] };
+  function pushWanPoint(ts, rx, tx){
+    wanSeries.ts.push(ts); wanSeries.rx.push(rx||0); wanSeries.tx.push(tx||0);
+    if (wanSeries.ts.length > WAN_POINTS){ wanSeries.ts.shift(); wanSeries.rx.shift(); wanSeries.tx.shift(); }
+  }
+  function drawWanChart(){
+    const c = document.getElementById('wanChart'); if (!c) return;
+    const ctx = c.getContext('2d');
+    const w = c.width = c.clientWidth; const h = c.height; // height via attribute
+    ctx.clearRect(0,0,w,h);
+    // axes
+    ctx.strokeStyle = '#263244'; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(30,10); ctx.lineTo(30,h-20); ctx.lineTo(w-10,h-20); ctx.stroke();
+    const max = Math.max(1, ...wanSeries.rx, ...wanSeries.tx);
+    const scaleY = (v)=> (h-20) - (v/max)*(h-40);
+    const scaleX = (i)=> 30 + (i/(WAN_POINTS-1))*(w-40);
+    ctx.fillStyle = '#9aa6b2'; ctx.font = '12px ui-sans-serif'; ctx.fillText(fmtRate(max), 34, 18);
+    // download (rx)
+    ctx.strokeStyle = '#6cb6ff'; ctx.beginPath();
+    wanSeries.rx.forEach((v,i)=>{ const x=scaleX(i), y=scaleY(v); i? ctx.lineTo(x,y) : ctx.moveTo(x,y); });
+    ctx.stroke();
+    // upload (tx)
+    ctx.strokeStyle = '#74ffa0'; ctx.beginPath();
+    wanSeries.tx.forEach((v,i)=>{ const x=scaleX(i), y=scaleY(v); i? ctx.lineTo(x,y) : ctx.moveTo(x,y); });
+    ctx.stroke();
+  }
+
+  async function api(path, opts){
+    const res = await fetch(path, opts);
+    if (!res.ok) throw new Error(`${res.status}`);
+    return res.json();
+  }
+
+  // Sites
+  $('#btnLoadSites').onclick = async () => {
+    try {
+      const data = await api('/api/sites');
+      outSites.textContent = JSON.stringify(data, null, 2);
+      const sel = $('#siteSelect');
+      sel.innerHTML = '';
+      (data?.data || []).forEach(s => {
+        const o = document.createElement('option');
+        o.value = s.id; o.textContent = `${s.name} (${s.internalReference})`; sel.appendChild(o);
+      });
+      $('#siteInfo').textContent = `${(data?.count ?? 0)} visible`;
+    } catch (e) {
+      showBanner('Failed to load sites');
+    }
+  };
+
+  $('#btnSetSite').onclick = async () => {
+    const siteId = $('#siteSelect').value; if (!siteId) return alert('Pick a site');
+    try {
+      await api('/api/site', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ siteId }) });
+      showBanner(`Default site set to ${siteId}`);
+    } catch (e) {
+      showBanner('Failed to set default site');
+    }
+  };
+
+  // Devices
+  $('#btnLoadDevices').onclick = async () => {
+    const siteSel = $('#siteSelect').value; const q = siteSel? `?siteId=${encodeURIComponent(siteSel)}` : '';
+    try {
+      const data = await api('/api/devices'+q);
+      LAST_DEVICES = Array.isArray(data?.data) ? data.data : [];
+      const rows = (data?.data || []).map(d => {
+        const name = pick(d.name, d.hostname, d.displayName, d.deviceName, '—');
+        const model = pick(d.model, d.modelName, d.shortname, d.productLine, '—');
+        const mac = pick(d.mac, d.macAddress, d.baseMac, d.primaryMac);
+        const ip  = pick(d.ipAddress, d.ip, d.primaryIp, d.managementIp);
+        const connected = isDeviceConnected(d);
+        return `<tr>
+          <td>${fmt(name)}</td>
+          <td class="small muted">${fmt(model)}</td>
+          <td class="small">${fmt(mac)}</td>
+          <td class="small">${fmt(ip)}</td>
+          <td class="right">${connected ? '<span class="status ok">connected</span>' : (d.isAdopted? '<span class="status warn">adopted</span>' : '<span class="status bad">offline</span>')}</td>
+        </tr>`
+      }).join('');
+      $('#devicesTbl tbody').innerHTML = rows || '<tr><td colspan="5" class="muted">No devices</td></tr>';
+      $('#devCount').textContent = `${data?.count ?? 0} devices`;
+      filterDevices();
+      $('#dbgDevices').textContent = JSON.stringify(data, null, 2);
+    } catch (e) {
+      showBanner('Failed to load devices');
+    }
+  };
+
+  function filterDevices(){
+    const f = $('#deviceFilter').value.trim().toLowerCase();
+    $$('#devicesTbl tbody tr').forEach(tr => {
+      const text = tr.textContent.toLowerCase();
+      tr.style.display = f? (text.includes(f)? '' : 'none') : '';
+    });
+  }
+  $('#deviceFilter').addEventListener('input', filterDevices);
+
+  // Clients
+  async function loadClients(){
+    const siteSel = $('#siteSelect').value; const q = siteSel? `?siteId=${encodeURIComponent(siteSel)}` : '';
+    try {
+      const data = await api('/api/clients'+q);
+      LAST_CLIENTS = Array.isArray(data?.data) ? data.data : [];
+      document.getElementById('dbgClients').textContent = JSON.stringify(data, null, 2);
+      const only = $('#onlyOnline').checked;
+      const term = $('#clientSearch').value.trim().toLowerCase();
+
+      const items = (data?.data || []).filter(c => {
+        if (only && !isClientOnline(c)) return false;
+        if (!term) return true;
+        const blob = `${c.hostname||''} ${c.mac||''} ${c.ipAddress||''}`.toLowerCase();
+        return blob.includes(term);
+      });
+
+      const rows = items.map(c => {
+        const host = pick(c.hostname, c.host_name, c.name, '—');
+        const mac  = pick(c.mac, c.macAddress, c.baseMac, c.primaryMac);
+        const ip   = pick(c.ipAddress, c.ip, c.network_address);
+        const rssi = pick(c.signalStrengthDbm, c.rssi, c.signal, '');
+        const uplink = pick(c.uplink?.interfaceName, c.apName, c.switchName, c.ap_name, '');
+        const online = isClientOnline(c);
+        return `<tr>
+          <td>${fmt(host)}</td>
+          <td class="small">${fmt(mac)}</td>
+          <td class="small">${fmt(ip)}</td>
+          <td>${fmt(rssi)}</td>
+          <td>${fmt(uplink)}</td>
+          <td class="right">
+            ${online ? '<span class="status ok">online</span>' : '<span class="status bad">offline</span>'}
+            <button class="primary" data-act="session" data-id="${c.id || c.clientId || ''}" style="margin-left:8px">Session</button>
+          </td>
+        </tr>`
+      }).join('');
+
+      $('#clientsTbl tbody').innerHTML = rows || '<tr><td colspan="6" class="muted">No clients</td></tr>';
+      $('#cliCount').textContent = `${items.length}/${data?.count ?? items.length} shown`;
+    } catch (e) {
+      showBanner('Failed to load clients');
+    }
+  }
+
+  $('#btnLoadClients').onclick = loadClients;
+  $('#clientSearch').addEventListener('input', loadClients);
+  $('#onlyOnline').addEventListener('change', loadClients);
+
+  $('#clientsTbl').addEventListener('click', (e) => {
+    const btn = e.target.closest('button[data-act]'); if (!btn) return;
+    if (btn.dataset.act === 'session'){
+      const id = btn.dataset.id;
+      const c = LAST_CLIENTS.find(x => (x.id || x.clientId) === id);
+      if (!c){ showBanner('Client not found in cache'); return; }
+
+      // Map uplink device if we have it
+      let uplink = '';
+      if (c.uplinkDeviceId){
+        const d = LAST_DEVICES.find(dd => dd.id === c.uplinkDeviceId);
+        if (d) uplink = `${d.name || d.hostname || d.displayName || ''} (${d.model || d.modelName || ''})`;
+      }
+
+      const kv = [
+        ['Name', c.hostname || c.host_name || c.name || '—'],
+        ['Type', c.type || '—'],
+        ['IP', c.ipAddress || c.ip || '—'],
+        ['MAC', c.macAddress || c.mac || '—'],
+        ['Connected at', c.connectedAt || '—'],
+        ['Uplink', uplink || c.uplink?.interfaceName || c.apName || c.switchName || '—'],
+        ['Access', (c.access && c.access.type) ? c.access.type : '—']
+      ];
+      openSessionModal(kv, c);
+    }
+  });
+  // Modal helpers
+  function openSessionModal(kvPairs, raw){
+    const kvEl = document.getElementById('modalKV');
+    kvEl.innerHTML = '';
+    for (const [k,v] of kvPairs){
+      const kd = document.createElement('div'); kd.className='k'; kd.textContent = k; kvEl.appendChild(kd);
+      const vd = document.createElement('div'); vd.textContent = (v==null? '—' : String(v)); kvEl.appendChild(vd);
+    }
+    document.getElementById('modalTitle').textContent = (raw.hostname || raw.name || 'Client') + ' — session';
+    document.getElementById('modalRaw').textContent = JSON.stringify(raw, null, 2);
+    document.getElementById('modalBackdrop').style.display = 'flex';
+  }
+  function closeModal(){ document.getElementById('modalBackdrop').style.display = 'none'; }
+  function bindModalHandlers(){
+    const closeBtn = document.getElementById('modalClose');
+    const backdropEl = document.getElementById('modalBackdrop');
+    if (closeBtn) closeBtn.onclick = closeModal;
+    if (backdropEl) backdropEl.addEventListener('click', (e)=>{ if (e.target === backdropEl) closeModal(); });
+  }
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', bindModalHandlers);
+  } else {
+    bindModalHandlers();
+  }
+
+
+  // ===== WAN live polling =====
+  let wanTimer = null, wanPaused = false;
+  async function pollWan(){
+    try{
+      const siteSel = $('#siteSelect').value; const q = siteSel? `?siteId=${encodeURIComponent(siteSel)}` : '';
+      const d = await api('/api/wan/health'+q);
+      $('#wanIp').textContent = d.wan_ip ? `(IP ${d.wan_ip})` : '';
+      $('#wanStatus').textContent = d.status ? `status: ${d.status}` : '';
+      $('#rxNow').textContent = fmtRate(d.rx_bps);
+      $('#txNow').textContent = fmtRate(d.tx_bps);
+      if (!wanPaused){ pushWanPoint(d.ts || Date.now(), d.rx_bps || 0, d.tx_bps || 0); drawWanChart(); }
+    }catch(err){ /* optionally: showBanner('WAN polling failed'); */ }
+  }
+  function startWan(){ if (wanTimer) clearInterval(wanTimer); wanTimer = setInterval(pollWan, 1000); pollWan(); }
+  function stopWan(){ if (wanTimer) clearInterval(wanTimer); wanTimer=null; }
+  const btnTg = document.getElementById('btnToggleGraph');
+  if (btnTg){ btnTg.onclick = ()=>{ wanPaused = !wanPaused; btnTg.textContent = wanPaused ? 'Resume' : 'Pause'; }; }
+
+  // Auto refresh
+  function startAuto(){
+    stopAuto();
+    const sec = Math.max(3, parseInt($('#refreshSec').value||'10', 10));
+    autoTimer = setInterval(()=>{ $('#btnLoadClients').click(); $('#btnLoadDevices').click(); }, sec*1000);
+    startWan();
+    $('#btnAuto').textContent = 'Stop';
+  }
+  function stopAuto(){
+    if (autoTimer) clearInterval(autoTimer);
+    autoTimer = null;
+    stopWan();
+    $('#btnAuto').textContent = 'Start';
+  }
+  $('#btnAuto').onclick = () => autoTimer? stopAuto() : startAuto();
+
+  // Debug toggles
+  $('#btnDbgDev').onclick = () => {
+    const el = document.getElementById('dbgDevices');
+    el.style.display = (el.style.display === 'none' || !el.style.display) ? 'block' : 'none';
+  };
+  $('#btnDbgCli').onclick = () => {
+    const el = document.getElementById('dbgClients');
+    el.style.display = (el.style.display === 'none' || !el.style.display) ? 'block' : 'none';
+  };
+
+  // Quick keys
+  document.addEventListener('keydown', (e)=>{ if (e.key==='r' || e.key==='R'){ $('#btnLoadClients').click(); $('#btnLoadDevices').click(); }});
+
+  // Initial load
+  $('#btnLoadSites').click();
+  $('#btnLoadDevices').click();
+  $('#btnLoadClients').click();
+  startWan();
+</script>
+  <div id="modalBackdrop" class="modal-backdrop">
+    <div class="modal">
+      <header>
+        <h4 id="modalTitle">Client session</h4>
+        <button class="close-x" id="modalClose" aria-label="Close">×</button>
+      </header>
+      <div class="body">
+        <div class="kv" id="modalKV"></div>
+        <h5 style="margin:14px 0 6px">Raw</h5>
+        <pre id="modalRaw" class="small" style="max-height:28vh; overflow:auto"></pre>
+      </div>
+    </div>
+  </div>
+</body>
+</html>
