@@ -35,7 +35,7 @@ unifiUI/
 - **XSS захист**: Всі API дані escaped через `esc()` на фронтенді
 - **TLS**: Підтримка self-signed сертифікатів через `UNSAFE_TLS`
 - **WAN графік**: Canvas-based, 60 точок (~1хв при 1Hz polling)
-- **Multi-WAN**: Назви WAN інтерфейсів з Integration v1 (Astra, LinkCOM) + per-WAN latency з legacy uptime_stats
+- **Multi-WAN**: Per-WAN трафік (rx/tx) з gateway device stats + назви з Integration v1 + WAN selector (Combined/WAN1/WAN2)
 - **Thread-safe site ID**: `sync.RWMutex` для мутабельного default site
 - **Graceful shutdown**: SIGINT/SIGTERM → 5s timeout
 

@@ -222,6 +222,46 @@ func (u *udrClient) getWanHealth(siteID string) (json.RawMessage, error) {
 	return json.RawMessage(data), nil
 }
 
+// getDeviceStat fetches per-device stats via legacy stat/device endpoint.
+// Gateway device contains per-uplink (WAN) traffic data.
+func (u *udrClient) getDeviceStat(siteID string) (json.RawMessage, error) {
+	legacySite := u.getLegacySiteName(siteID)
+	url := u.baseURL + "/proxy/network/api/s/" + legacySite + "/stat/device"
+
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("X-API-KEY", u.apiKey)
+
+	resp, err := u.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == 401 || resp.StatusCode == 403 {
+		resp.Body.Close()
+		req2, _ := http.NewRequest("GET", url, nil)
+		req2.Header.Set("Accept", "application/json")
+		resp, err = u.httpClient.Do(req2)
+		if err != nil {
+			return nil, err
+		}
+		defer resp.Body.Close()
+	}
+
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("%d %s: %s", resp.StatusCode, resp.Status, string(data))
+	}
+	return json.RawMessage(data), nil
+}
+
 // ─── Rate Limiter (120 req/min per IP) ───────────────────────
 
 type rateLimiter struct {
@@ -344,60 +384,12 @@ func (s *server) handleGetDevices(w http.ResponseWriter, r *http.Request) {
 	w.Write(data)
 }
 
-// Current WAN rates (bytes/sec) + per-WAN uptime stats
+// Current WAN rates (bytes/sec) per-WAN via device stats
 func (s *server) handleWanHealth(w http.ResponseWriter, r *http.Request) {
 	siteID := s.getSiteID(r)
-	raw, err := s.udr.getWanHealth(siteID)
-	if err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
-		return
-	}
 
-	var resp struct {
-		Data []map[string]any `json:"data"`
-	}
-	if json.Unmarshal(raw, &resp) != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.Write(raw)
-		return
-	}
-
-	// Find wan subsystem (UDR aggregates all WANs into one subsystem)
-	var wanSub map[string]any
-	for _, item := range resp.Data {
-		if item["subsystem"] == "wan" {
-			wanSub = item
-			break
-		}
-	}
-	if wanSub == nil {
-		wanSub = map[string]any{}
-	}
-
-	// Aggregate traffic (covers all WANs combined)
-	result := map[string]any{
-		"ts":     time.Now().UnixMilli(),
-		"rx_bps": wanSub["rx_bytes-r"],
-		"tx_bps": wanSub["tx_bytes-r"],
-		"wan_ip": wanSub["wan_ip"],
-		"status": wanSub["status"],
-	}
-
-	// Extract per-WAN uptime stats (latency, availability)
-	if uptimeRaw, ok := wanSub["uptime_stats"].(map[string]any); ok {
-		perWan := []map[string]any{}
-		for name, data := range uptimeRaw {
-			entry := map[string]any{"name": name}
-			if m, ok := data.(map[string]any); ok {
-				entry["latency"] = m["latency_average"]
-				entry["availability"] = m["availability"]
-			}
-			perWan = append(perWan, entry)
-		}
-		result["per_wan"] = perWan
-	}
-
-	// Fetch Integration v1 WAN names (Astra, LinkCOM, etc.)
+	// 1) Fetch Integration v1 WAN names (Astra, LinkCOM, etc.)
+	wanNames := map[int]string{} // index -> human name
 	wansRaw, err := s.udr.get("/sites/" + siteID + "/wans")
 	if err == nil {
 		var wansResp struct {
@@ -407,14 +399,102 @@ func (s *server) handleWanHealth(w http.ResponseWriter, r *http.Request) {
 			} `json:"data"`
 		}
 		if json.Unmarshal(wansRaw, &wansResp) == nil {
-			names := []map[string]string{}
-			for _, w := range wansResp.Data {
-				names = append(names, map[string]string{"id": w.ID, "name": w.Name})
+			for i, w := range wansResp.Data {
+				wanNames[i] = w.Name
 			}
-			result["wan_interfaces"] = names
 		}
 	}
 
+	// 2) Fetch per-WAN traffic from legacy stat/device (gateway wan1/wan2 objects)
+	var wans []map[string]any
+	devRaw, err := s.udr.getDeviceStat(siteID)
+	if err == nil {
+		var devResp struct {
+			Data []map[string]any `json:"data"`
+		}
+		if json.Unmarshal(devRaw, &devResp) == nil {
+			for _, dev := range devResp.Data {
+				devType, _ := dev["type"].(string)
+				if devType != "ugw" && devType != "udm" && devType != "uxg" {
+					continue
+				}
+				// Extract wan1, wan2, wan3... from gateway device
+				for i := 1; i <= 4; i++ {
+					key := "wan"
+					if i > 1 {
+						key = fmt.Sprintf("wan%d", i)
+					}
+					wanData, ok := dev[key].(map[string]any)
+					if !ok {
+						continue
+					}
+					// Skip disabled WANs
+					if enabled, ok := wanData["enable"].(bool); ok && !enabled {
+						continue
+					}
+
+					name := wanNames[i-1]
+					if name == "" {
+						name = strings.ToUpper(key)
+					}
+
+					entry := map[string]any{
+						"name":         name,
+						"key":          key,
+						"ip":           wanData["ip"],
+						"latency":      wanData["latency"],
+						"availability": wanData["availability"],
+					}
+
+					// Per-WAN traffic rates
+					if rx, ok := wanData["rx_bytes-r"].(float64); ok {
+						entry["rx_bps"] = rx
+					}
+					if tx, ok := wanData["tx_bytes-r"].(float64); ok {
+						entry["tx_bps"] = tx
+					}
+					// Fallback: some builds only have "bytes-r" (combined)
+					if entry["rx_bps"] == nil && entry["tx_bps"] == nil {
+						if br, ok := wanData["bytes-r"].(float64); ok {
+							entry["bytes_r"] = br
+						}
+					}
+
+					wans = append(wans, entry)
+				}
+				break // only need first gateway
+			}
+		}
+	}
+
+	// 3) Fallback: legacy stat/health aggregate (in case device stats failed)
+	if len(wans) == 0 {
+		raw, err := s.udr.getWanHealth(siteID)
+		if err == nil {
+			var resp struct {
+				Data []map[string]any `json:"data"`
+			}
+			if json.Unmarshal(raw, &resp) == nil {
+				for _, item := range resp.Data {
+					if item["subsystem"] == "wan" {
+						wans = append(wans, map[string]any{
+							"name":   "WAN",
+							"key":    "wan",
+							"rx_bps": item["rx_bytes-r"],
+							"tx_bps": item["tx_bytes-r"],
+							"ip":     item["wan_ip"],
+						})
+						break
+					}
+				}
+			}
+		}
+	}
+
+	result := map[string]any{
+		"ts":   time.Now().UnixMilli(),
+		"wans": wans,
+	}
 	writeJSON(w, http.StatusOK, result)
 }
 
@@ -441,6 +521,41 @@ func (s *server) handleWanRaw(w http.ResponseWriter, r *http.Request) {
 		var parsed any
 		json.Unmarshal(wansRaw, &parsed)
 		result["v1_wans"] = parsed
+	}
+
+	// Legacy stat/device — gateway uplinks (per-WAN port traffic)
+	devRaw, err := s.udr.getDeviceStat(siteID)
+	if err != nil {
+		result["device_error"] = err.Error()
+	} else {
+		var devResp struct {
+			Data []map[string]any `json:"data"`
+		}
+		if json.Unmarshal(devRaw, &devResp) == nil {
+			for _, dev := range devResp.Data {
+				devType, _ := dev["type"].(string)
+				if devType == "ugw" || devType == "udm" || devType == "uxg" {
+					// Gateway found — extract uplink info
+					gwInfo := map[string]any{}
+					if uplink, ok := dev["uplink"].(map[string]any); ok {
+						gwInfo["uplink"] = uplink
+					}
+					if uptable, ok := dev["uplink_table"].([]any); ok {
+						gwInfo["uplink_table"] = uptable
+					}
+					if wan1, ok := dev["wan1"].(map[string]any); ok {
+						gwInfo["wan1"] = wan1
+					}
+					if wan2, ok := dev["wan2"].(map[string]any); ok {
+						gwInfo["wan2"] = wan2
+					}
+					gwInfo["type"] = devType
+					gwInfo["name"] = dev["name"]
+					result["gateway"] = gwInfo
+					break
+				}
+			}
+		}
 	}
 
 	writeJSON(w, http.StatusOK, result)
