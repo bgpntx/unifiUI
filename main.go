@@ -344,7 +344,7 @@ func (s *server) handleGetDevices(w http.ResponseWriter, r *http.Request) {
 	w.Write(data)
 }
 
-// Current WAN rates (bytes/sec) + basic status
+// Current WAN rates (bytes/sec) + basic status — returns all WAN interfaces
 func (s *server) handleWanHealth(w http.ResponseWriter, r *http.Request) {
 	siteID := s.getSiteID(r)
 	raw, err := s.udr.getWanHealth(siteID)
@@ -362,28 +362,26 @@ func (s *server) handleWanHealth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Find 'wan' subsystem
-	var wan map[string]any
+	// Collect all WAN subsystems (wan, wan2, etc.)
+	var wans []map[string]any
 	for _, item := range resp.Data {
-		if item["subsystem"] == "wan" {
-			wan = item
-			break
+		sub, _ := item["subsystem"].(string)
+		if strings.HasPrefix(sub, "wan") {
+			entry := map[string]any{
+				"name":   sub,
+				"rx_bps": item["rx_bytes-r"],
+				"tx_bps": item["tx_bytes-r"],
+				"wan_ip": item["wan_ip"],
+				"status": item["status"],
+			}
+			wans = append(wans, entry)
 		}
-	}
-	if wan == nil {
-		wan = map[string]any{}
 	}
 
 	result := map[string]any{
 		"ts":          time.Now().UnixMilli(),
-		"rx_bps":      wan["rx_bytes-r"],
-		"tx_bps":      wan["tx_bytes-r"],
-		"wan_ip":      wan["wan_ip"],
-		"status":      wan["status"],
+		"wans":        wans,
 		"legacy_site": s.udr.getLegacySiteName(siteID),
-	}
-	if result["rx_bps"] == nil && result["tx_bps"] == nil {
-		result["note"] = "no_wan_rate_data"
 	}
 	writeJSON(w, http.StatusOK, result)
 }

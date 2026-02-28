@@ -284,6 +284,9 @@
       <h3>Internet</h3>
       <div class="row" style="margin-bottom:8px">
         <span class="muted small">WAN</span>
+        <select id="wanSelect" class="small" style="margin-left:6px">
+          <option value="combined">Combined</option>
+        </select>
         <span id="wanIp" class="small" style="margin-left:6px"></span>
         <span id="wanStatus" class="small" style="margin-left:auto"></span>
       </div>
@@ -469,31 +472,42 @@
       return bps.toFixed(0) + ' B/s';
     }
     const WAN_POINTS = 60; // ~last minute @ 1Hz
-    const wanSeries = { rx: [], tx: [], ts: [] };
-    function pushWanPoint(ts, rx, tx) {
-      wanSeries.ts.push(ts); wanSeries.rx.push(rx || 0); wanSeries.tx.push(tx || 0);
-      if (wanSeries.ts.length > WAN_POINTS) { wanSeries.ts.shift(); wanSeries.rx.shift(); wanSeries.tx.shift(); }
+    // Per-WAN series + combined
+    const wanSeriesMap = {}; // key: wan name or 'combined'
+    function getWanSeries(name) {
+      if (!wanSeriesMap[name]) wanSeriesMap[name] = { rx: [], tx: [], ts: [] };
+      return wanSeriesMap[name];
+    }
+    function pushWanPoint(name, ts, rx, tx) {
+      const s = getWanSeries(name);
+      s.ts.push(ts); s.rx.push(rx || 0); s.tx.push(tx || 0);
+      if (s.ts.length > WAN_POINTS) { s.ts.shift(); s.rx.shift(); s.tx.shift(); }
     }
     function drawWanChart() {
       const c = document.getElementById('wanChart'); if (!c) return;
+      const selected = $('#wanSelect').value || 'combined';
+      const s = getWanSeries(selected);
       const ctx = c.getContext('2d');
       const w = c.width = c.clientWidth; const h = c.height; // height via attribute
       ctx.clearRect(0, 0, w, h);
       // axes
       ctx.strokeStyle = '#263244'; ctx.lineWidth = 1;
       ctx.beginPath(); ctx.moveTo(30, 10); ctx.lineTo(30, h - 20); ctx.lineTo(w - 10, h - 20); ctx.stroke();
-      const max = Math.max(1, ...wanSeries.rx, ...wanSeries.tx);
+      const max = Math.max(1, ...s.rx, ...s.tx);
       const scaleY = (v) => (h - 20) - (v / max) * (h - 40);
       const scaleX = (i) => 30 + (i / (WAN_POINTS - 1)) * (w - 40);
       ctx.fillStyle = '#9aa6b2'; ctx.font = '12px ui-sans-serif'; ctx.fillText(fmtRate(max), 34, 18);
       // download (rx)
       ctx.strokeStyle = '#6cb6ff'; ctx.beginPath();
-      wanSeries.rx.forEach((v, i) => { const x = scaleX(i), y = scaleY(v); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
+      s.rx.forEach((v, i) => { const x = scaleX(i), y = scaleY(v); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
       ctx.stroke();
       // upload (tx)
       ctx.strokeStyle = '#74ffa0'; ctx.beginPath();
-      wanSeries.tx.forEach((v, i) => { const x = scaleX(i), y = scaleY(v); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
+      s.tx.forEach((v, i) => { const x = scaleX(i), y = scaleY(v); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
       ctx.stroke();
+      // legend
+      ctx.fillStyle = '#6cb6ff'; ctx.fillText('▼ Down', w - 130, 18);
+      ctx.fillStyle = '#74ffa0'; ctx.fillText('▲ Up', w - 60, 18);
     }
 
     async function api(path, opts) {
@@ -669,15 +683,59 @@
 
     // ===== WAN live polling =====
     let wanTimer = null, wanPaused = false;
+    let wanSelectPopulated = false;
     async function pollWan() {
       try {
         const siteSel = $('#siteSelect').value; const q = siteSel ? `?siteId=${encodeURIComponent(siteSel)}` : '';
         const d = await api('/api/wan/health' + q);
-        $('#wanIp').textContent = d.wan_ip ? `(IP ${d.wan_ip})` : '';
-        $('#wanStatus').textContent = d.status ? `status: ${d.status}` : '';
-        $('#rxNow').textContent = fmtRate(d.rx_bps);
-        $('#txNow').textContent = fmtRate(d.tx_bps);
-        if (!wanPaused) { pushWanPoint(d.ts || Date.now(), d.rx_bps || 0, d.tx_bps || 0); drawWanChart(); }
+        const wans = d.wans || [];
+        const selected = $('#wanSelect').value || 'combined';
+
+        // Populate WAN selector once (on first data)
+        if (!wanSelectPopulated && wans.length > 0) {
+          const sel = $('#wanSelect');
+          wans.forEach(w => {
+            const exists = Array.from(sel.options).some(o => o.value === w.name);
+            if (!exists) {
+              const o = document.createElement('option');
+              o.value = w.name;
+              o.textContent = w.name.toUpperCase() + (w.wan_ip ? ` (${w.wan_ip})` : '');
+              sel.appendChild(o);
+            }
+          });
+          wanSelectPopulated = true;
+        }
+
+        // Calculate combined & per-WAN rates
+        let combRx = 0, combTx = 0;
+        wans.forEach(w => {
+          const rx = typeof w.rx_bps === 'number' ? w.rx_bps : 0;
+          const tx = typeof w.tx_bps === 'number' ? w.tx_bps : 0;
+          combRx += rx;
+          combTx += tx;
+          if (!wanPaused) pushWanPoint(w.name, d.ts || Date.now(), rx, tx);
+        });
+        if (!wanPaused) pushWanPoint('combined', d.ts || Date.now(), combRx, combTx);
+
+        // Display selected WAN info
+        if (selected === 'combined') {
+          const ips = wans.map(w => w.wan_ip).filter(Boolean).join(' / ');
+          $('#wanIp').textContent = ips ? `(${ips})` : '';
+          const statuses = wans.map(w => w.status).filter(Boolean);
+          $('#wanStatus').textContent = statuses.length ? statuses.join(' / ') : '';
+          $('#rxNow').textContent = fmtRate(combRx);
+          $('#txNow').textContent = fmtRate(combTx);
+        } else {
+          const cur = wans.find(w => w.name === selected);
+          if (cur) {
+            $('#wanIp').textContent = cur.wan_ip ? `(IP ${cur.wan_ip})` : '';
+            $('#wanStatus').textContent = cur.status ? `status: ${cur.status}` : '';
+            $('#rxNow').textContent = fmtRate(cur.rx_bps);
+            $('#txNow').textContent = fmtRate(cur.tx_bps);
+          }
+        }
+
+        if (!wanPaused) drawWanChart();
       } catch (err) { /* optionally: showBanner('WAN polling failed'); */ }
     }
     function startWan() { if (wanTimer) clearInterval(wanTimer); wanTimer = setInterval(pollWan, 1000); pollWan(); }
