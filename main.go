@@ -420,10 +420,7 @@ func (s *server) handleWanHealth(w http.ResponseWriter, r *http.Request) {
 				}
 				// Extract wan1, wan2, wan3... from gateway device
 				for i := 1; i <= 4; i++ {
-					key := "wan"
-					if i > 1 {
-						key = fmt.Sprintf("wan%d", i)
-					}
+					key := fmt.Sprintf("wan%d", i)
 					wanData, ok := dev[key].(map[string]any)
 					if !ok {
 						continue
