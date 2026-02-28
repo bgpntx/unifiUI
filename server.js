@@ -2,6 +2,7 @@ import express from "express";
 import fetch from "node-fetch";
 import cors from "cors";
 import path from "node:path";
+import https from "node:https";
 import { fileURLToPath } from "node:url";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -9,9 +10,9 @@ const __dirname = path.dirname(__filename);
 
 // ===== Configuration (prefer env; do NOT hardcode secrets) =====
 const UDR_BASE = process.env.UDR_BASE || "https://192.168.69.1";
-let   SITE_ID  = process.env.UNIFI_SITE_ID || "88f7af54-98f8-306a-a1c7-c9349722b1f6";
-const API_KEY  = process.env.UNIFI_API_KEY; // no fallback: avoid committing secrets
-const PORT     = process.env.PORT || 5173;
+let SITE_ID = process.env.UNIFI_SITE_ID || "88f7af54-98f8-306a-a1c7-c9349722b1f6";
+const API_KEY = process.env.UNIFI_API_KEY; // no fallback: avoid committing secrets
+const PORT = process.env.PORT || 5173;
 const UNSAFE_TLS = process.env.UNSAFE_TLS === '1'; // set to 1 only if you cannot install the UDR CA
 
 if (!API_KEY) {
@@ -20,16 +21,44 @@ if (!API_KEY) {
 }
 
 const app = express();
-app.use(cors());
+
+// CORS — дозволяємо тільки локальні запити
+app.use(cors({
+  origin: [`http://localhost:${PORT}`, `http://127.0.0.1:${PORT}`]
+}));
 app.use(express.json({ limit: '256kb' }));
 app.use(express.static(path.join(__dirname, 'public')));
 
+// ===== Simple in-memory rate limiter (120 req/min per IP) =====
+const rateMap = new Map();
+const RATE_WINDOW_MS = 60_000;
+const RATE_MAX = 120;
+app.use((req, res, next) => {
+  const ip = req.ip;
+  const now = Date.now();
+  const entry = rateMap.get(ip);
+  if (!entry || now - entry.start > RATE_WINDOW_MS) {
+    rateMap.set(ip, { start: now, count: 1 });
+    return next();
+  }
+  entry.count++;
+  if (entry.count > RATE_MAX) {
+    return res.status(429).json({ error: 'Too many requests' });
+  }
+  next();
+});
+
+// ===== Request logging =====
+app.use((req, _res, next) => {
+  // Skip noisy WAN polling from cluttering logs
+  if (req.path !== '/api/wan/health') {
+    console.log(`[${new Date().toISOString()}] ${req.method} ${req.path}`);
+  }
+  next();
+});
+
 // Reusable HTTPS agent. In dev you can set UNSAFE_TLS=1 to skip TLS validation; prefer installing CA.
-let httpsAgent;
-(async () => {
-  const https = await import('https');
-  httpsAgent = new https.Agent({ keepAlive: true, rejectUnauthorized: !UNSAFE_TLS });
-})();
+const httpsAgent = new https.Agent({ keepAlive: true, rejectUnauthorized: !UNSAFE_TLS });
 
 // Generic request with timeout
 async function doRequest(method, pathname, body) {
@@ -58,19 +87,19 @@ async function doRequest(method, pathname, body) {
   }
 }
 
-const udrGet  = (p) => doRequest('GET',  p);
-const udrPost = (p,b) => doRequest('POST', p, b);
+const udrGet = (p) => doRequest('GET', p);
+const udrPost = (p, b) => doRequest('POST', p, b);
 
 // Map Integration v1 site UUID -> legacy short name (e.g., "default")
-async function getLegacySiteName(siteId){
-  try{
+async function getLegacySiteName(siteId) {
+  try {
     const sites = await udrGet('/sites');
     const arr = Array.isArray(sites?.data) ? sites.data : [];
     const m = arr.find(s => s.id === siteId);
     if (m && m.internalReference) return m.internalReference;
     // fallback: first site or 'default'
     return (arr[0] && arr[0].internalReference) ? arr[0].internalReference : 'default';
-  }catch{
+  } catch {
     return 'default';
   }
 }
@@ -78,7 +107,7 @@ async function getLegacySiteName(siteId){
 // ---- Legacy health endpoint (WAN instantaneous rates) ----
 // Many UniFi builds expose rx_bytes-r / tx_bytes-r on /api/s/<site>/stat/health under the 'wan' subsystem.
 // We go through the same console proxy but use the legacy path (not Integration v1).
-async function udrGetWanHealth(siteId){
+async function udrGetWanHealth(siteId) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 8000);
   const legacySite = await getLegacySiteName(siteId);
@@ -137,8 +166,15 @@ app.get('/api/wan/health', async (req, res) => {
 
 // ========== API exposed to the frontend ==========
 
-// Simple health endpoint for your reverse proxy/monitoring
-app.get('/health', (_req, res) => res.json({ ok: true }));
+// Health endpoint — перевіряє з'єднання з UDR
+app.get('/health', async (_req, res) => {
+  try {
+    await udrGet('/sites');
+    res.json({ ok: true, udr: 'reachable', ts: Date.now() });
+  } catch (e) {
+    res.status(503).json({ ok: false, udr: 'unreachable', error: String(e), ts: Date.now() });
+  }
+});
 
 // List sites
 app.get('/api/sites', async (_req, res) => {
