@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
 	"net/http"
 	"os"
@@ -543,8 +544,12 @@ func main() {
 	mux.HandleFunc("GET /api/wan/health", srv.handleWanHealth)
 	mux.HandleFunc("POST /api/clients/{clientId}/authorize", srv.handleAuthorize)
 
-	// Static files (embedded)
-	mux.Handle("/", http.FileServer(http.FS(staticFS)))
+	// Static files (embedded, strip "public" prefix)
+	staticSub, err := fs.Sub(staticFS, "public")
+	if err != nil {
+		log.Fatalf("[FATAL] embedded fs: %v", err)
+	}
+	mux.Handle("/", http.FileServer(http.FS(staticSub)))
 
 	handler := chain(mux,
 		rateLimitMiddleware(rl),
