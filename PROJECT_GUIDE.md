@@ -2,35 +2,41 @@
 
 ## Огляд
 
-Локальний веб-дашборд для моніторингу UniFi Dream Router. Express сервер виступає проксі до UDR Integration API v1, зберігаючи API key серверно.
+Локальний веб-дашборд для моніторингу UniFi Dream Router. Go HTTP сервер виступає проксі до UDR Integration API v1, зберігаючи API key серверно. HTML/CSS/JS вбудовано в бінарник через `embed.FS`.
 
 ## Структура
 
 ```
 unifiUI/
-├── server.js          # Express проксі-сервер
+├── main.go            # Go HTTP сервер (API proxy, middleware, embed)
+├── go.mod             # Go module
 ├── public/
 │   └── index.html     # SPA дашборд (CSS+HTML+JS)
+├── Dockerfile         # Multi-stage: golang:1.22-alpine → scratch
 ├── .env.example       # Шаблон конфігурації
-├── package.json       # Залежності (express, node-fetch, cors)
-└── README.md          # Документація
+├── README.md          # Документація
+└── PROJECT_GUIDE.md   # Цей файл
 ```
 
 ## Технічний стек
 
-- **Runtime**: Node.js (ESM)
-- **Backend**: Express 4
-- **Frontend**: Vanilla HTML/CSS/JS (single file SPA)
+- **Мова**: Go 1.22+
+- **Залежності**: Zero (тільки stdlib)
+- **Frontend**: Vanilla HTML/CSS/JS (embedded через `embed.FS`)
 - **API**: UniFi Integration v1 + Legacy stat/health
+- **Docker**: scratch base, ~5 МБ образ
 
 ## Ключові рішення
 
 - **Проксі-архітектура**: API key ніколи не потрапляє в браузер
-- **Rate limiting**: 120 req/min per IP (in-memory)
+- **embed.FS**: HTML вбудований в бінарник, один файл для деплою
+- **Rate limiting**: 120 req/min per IP (in-memory, sync.Mutex)
 - **CORS**: Обмежено до localhost
-- **XSS захист**: Всі API дані escaped через `esc()` перед вставкою в DOM
-- **HTTPS agent**: Синхронна ініціалізація, підтримка self-signed сертифікатів через `UNSAFE_TLS`
+- **XSS захист**: Всі API дані escaped через `esc()` на фронтенді
+- **TLS**: Підтримка self-signed сертифікатів через `UNSAFE_TLS`
 - **WAN графік**: Canvas-based, 60 точок (~1хв при 1Hz polling)
+- **Thread-safe site ID**: `sync.RWMutex` для мутабельного default site
+- **Graceful shutdown**: SIGINT/SIGTERM → 5s timeout
 
 ## API ендпоінти
 
@@ -42,22 +48,24 @@ unifiUI/
 | GET | `/api/clients` | Список клієнтів |
 | GET | `/api/devices` | Список пристроїв |
 | GET | `/api/wan/health` | WAN статус та швидкість |
-| POST | `/api/clients/:id/authorize` | Авторизація гостя |
+| POST | `/api/clients/{id}/authorize` | Авторизація гостя |
 
-## Запуск
+## Збірка та запуск
 
 ```bash
-cp .env.example .env
-# Заповнити UNIFI_API_KEY
-npm install
-npm start
+# Локально
+go build -o unifiui .
+UNIFI_API_KEY=xxx ./unifiui
+
+# Docker
+docker build -t unifiui .
+docker run -e UNIFI_API_KEY=xxx -p 5173:5173 unifiui
 ```
 
 ## Останні зміни
 
-- Виправлено race condition з HTTPS agent
-- Додано rate limiting та CORS обмеження
-- Додано request logging
-- Виправлено XSS вразливість (HTML escaping)
-- Покращено `/health` endpoint (перевірка з'єднання з UDR)
-- Виправлено `.gitignore` (стандартний Node.js формат)
+- Повний рефакторинг з Node.js/Express на Go
+- Zero зовнішніх залежностей
+- Додано Dockerfile (multi-stage, scratch)
+- Вбудований healthcheck для Docker
+- Graceful shutdown

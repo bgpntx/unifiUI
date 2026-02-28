@@ -13,20 +13,32 @@
 
 ## Вимоги
 
-- Node.js >= 18
+- Go 1.22+ (для збірки)
 - UniFi API Key (створюється в UDR → Settings → Integration)
 
-## Встановлення
+## Збірка та запуск
 
 ```bash
 cp .env.example .env
 # Вписати UNIFI_API_KEY у .env
 
-npm install
-npm start
+go build -o unifiui .
+./unifiui
 ```
 
 Відкрити http://localhost:5173
+
+## Docker
+
+```bash
+docker build -t unifiui .
+docker run -d --name unifiui \
+  -e UNIFI_API_KEY=your-key \
+  -e UDR_BASE=https://192.168.69.1 \
+  -e UNSAFE_TLS=1 \
+  -p 5173:5173 \
+  unifiui
+```
 
 ## Конфігурація
 
@@ -41,15 +53,18 @@ npm start
 ## Архітектура
 
 ```
-Browser ──fetch──▶ Express(:5173) ──X-API-KEY──▶ UniFi UDR
+Browser ──fetch──▶ Go HTTP Server(:5173) ──X-API-KEY──▶ UniFi UDR
+                   ├── /health
                    ├── /api/sites
                    ├── /api/clients
                    ├── /api/devices
                    ├── /api/wan/health
-                   └── /health
+                   └── /api/clients/{id}/authorize
 ```
 
-API key зберігається тільки на сервері — браузер не має до нього доступу.
+- API key зберігається тільки на сервері — браузер не має до нього доступу
+- HTML/CSS/JS вбудовано в бінарник через `embed.FS`
+- Zero зовнішніх залежностей (тільки стандартна бібліотека Go)
 
 ## Гарячі клавіші
 
