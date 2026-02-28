@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"crypto/tls"
 	"embed"
@@ -20,6 +21,38 @@ import (
 //go:embed public
 var staticFS embed.FS
 
+// ─── .env loader ─────────────────────────────────────────────
+
+// loadDotEnv reads a .env file and sets environment variables.
+// Existing env vars take precedence (won't be overwritten).
+// Supports comments (#) and KEY=VALUE format.
+func loadDotEnv(path string) {
+	f, err := os.Open(path)
+	if err != nil {
+		return // .env is optional
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		// skip empty lines and comments
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		parts := strings.SplitN(line, "=", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		key := strings.TrimSpace(parts[0])
+		val := strings.TrimSpace(parts[1])
+		// existing env vars take precedence
+		if os.Getenv(key) == "" {
+			os.Setenv(key, val)
+		}
+	}
+}
+
 // ─── Configuration ───────────────────────────────────────────
 
 type config struct {
@@ -31,6 +64,9 @@ type config struct {
 }
 
 func loadConfig() config {
+	// Load .env file if present (env vars take precedence)
+	loadDotEnv(".env")
+
 	c := config{
 		UDRBase:   envOr("UDR_BASE", "https://192.168.69.1"),
 		SiteID:    envOr("UNIFI_SITE_ID", "88f7af54-98f8-306a-a1c7-c9349722b1f6"),
