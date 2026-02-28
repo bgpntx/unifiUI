@@ -282,12 +282,9 @@
   <main>
     <section class="card" id="panel-internet" style="grid-column: 1 / -1;">
       <h3>Internet</h3>
-      <div class="row" style="margin-bottom:8px">
-        <span class="muted small">WAN</span>
-        <select id="wanSelect" class="small" style="margin-left:6px">
-          <option value="combined">Combined</option>
-        </select>
-        <span id="wanIp" class="small" style="margin-left:6px"></span>
+      <div id="wanInterfaces" class="row" style="margin-bottom:8px;gap:12px;flex-wrap:wrap"></div>
+      <div class="row" style="margin-bottom:4px">
+        <span id="wanIp" class="small muted"></span>
         <span id="wanStatus" class="small" style="margin-left:auto"></span>
       </div>
       <div class="row" style="margin-bottom:6px">
@@ -472,23 +469,16 @@
       return bps.toFixed(0) + ' B/s';
     }
     const WAN_POINTS = 60; // ~last minute @ 1Hz
-    // Per-WAN series + combined
-    const wanSeriesMap = {}; // key: wan name or 'combined'
-    function getWanSeries(name) {
-      if (!wanSeriesMap[name]) wanSeriesMap[name] = { rx: [], tx: [], ts: [] };
-      return wanSeriesMap[name];
-    }
-    function pushWanPoint(name, ts, rx, tx) {
-      const s = getWanSeries(name);
-      s.ts.push(ts); s.rx.push(rx || 0); s.tx.push(tx || 0);
-      if (s.ts.length > WAN_POINTS) { s.ts.shift(); s.rx.shift(); s.tx.shift(); }
+    const wanSeries = { rx: [], tx: [], ts: [] };
+    function pushWanPoint(ts, rx, tx) {
+      wanSeries.ts.push(ts); wanSeries.rx.push(rx || 0); wanSeries.tx.push(tx || 0);
+      if (wanSeries.ts.length > WAN_POINTS) { wanSeries.ts.shift(); wanSeries.rx.shift(); wanSeries.tx.shift(); }
     }
     function drawWanChart() {
       const c = document.getElementById('wanChart'); if (!c) return;
-      const selected = $('#wanSelect').value || 'combined';
-      const s = getWanSeries(selected);
+      const s = wanSeries;
       const ctx = c.getContext('2d');
-      const w = c.width = c.clientWidth; const h = c.height; // height via attribute
+      const w = c.width = c.clientWidth; const h = c.height;
       ctx.clearRect(0, 0, w, h);
       // axes
       ctx.strokeStyle = '#263244'; ctx.lineWidth = 1;
@@ -683,56 +673,51 @@
 
     // ===== WAN live polling =====
     let wanTimer = null, wanPaused = false;
-    let wanSelectPopulated = false;
     async function pollWan() {
       try {
         const siteSel = $('#siteSelect').value; const q = siteSel ? `?siteId=${encodeURIComponent(siteSel)}` : '';
         const d = await api('/api/wan/health' + q);
-        const wans = d.wans || [];
-        const selected = $('#wanSelect').value || 'combined';
 
-        // Populate WAN selector once (on first data)
-        if (!wanSelectPopulated && wans.length > 0) {
-          const sel = $('#wanSelect');
-          wans.forEach(w => {
-            const exists = Array.from(sel.options).some(o => o.value === w.name);
-            if (!exists) {
-              const o = document.createElement('option');
-              o.value = w.name;
-              o.textContent = w.name.toUpperCase() + (w.wan_ip ? ` (${w.wan_ip})` : '');
-              sel.appendChild(o);
+        // Aggregate traffic (UDR combines all WANs)
+        const rx = typeof d.rx_bps === 'number' ? d.rx_bps : 0;
+        const tx = typeof d.tx_bps === 'number' ? d.tx_bps : 0;
+        if (!wanPaused) pushWanPoint(d.ts || Date.now(), rx, tx);
+
+        // Display traffic
+        $('#rxNow').textContent = fmtRate(rx);
+        $('#txNow').textContent = fmtRate(tx);
+        $('#wanIp').textContent = d.wan_ip ? `IP: ${esc(d.wan_ip)}` : '';
+        $('#wanStatus').textContent = d.status ? esc(d.status) : '';
+
+        // Per-WAN info panel: WAN names + latency
+        const container = document.getElementById('wanInterfaces');
+        if (container) {
+          const interfaces = d.wan_interfaces || [];
+          const perWan = d.per_wan || [];
+          // Build WAN info blocks (only rebuild if count changed)
+          if (container.childElementCount !== interfaces.length) {
+            container.innerHTML = '';
+            interfaces.forEach((iface, idx) => {
+              const el = document.createElement('div');
+              el.className = 'small';
+              el.id = 'wanInfo' + idx;
+              el.innerHTML = `<strong>${esc(iface.name)}</strong> <span class="muted" id="wanLat${idx}"></span>`;
+              container.appendChild(el);
+            });
+          }
+          // Update latency values
+          interfaces.forEach((iface, idx) => {
+            const latEl = document.getElementById('wanLat' + idx);
+            if (!latEl) return;
+            // Match by WAN/WAN2 naming convention
+            const wanKey = idx === 0 ? 'WAN' : 'WAN' + (idx + 1);
+            const pw = perWan.find(p => p.name === wanKey);
+            if (pw) {
+              const lat = pw.latency != null ? Math.round(pw.latency) + 'ms' : '—';
+              const avail = pw.availability != null ? pw.availability + '%' : '';
+              latEl.textContent = `${lat} ${avail}`;
             }
           });
-          wanSelectPopulated = true;
-        }
-
-        // Calculate combined & per-WAN rates
-        let combRx = 0, combTx = 0;
-        wans.forEach(w => {
-          const rx = typeof w.rx_bps === 'number' ? w.rx_bps : 0;
-          const tx = typeof w.tx_bps === 'number' ? w.tx_bps : 0;
-          combRx += rx;
-          combTx += tx;
-          if (!wanPaused) pushWanPoint(w.name, d.ts || Date.now(), rx, tx);
-        });
-        if (!wanPaused) pushWanPoint('combined', d.ts || Date.now(), combRx, combTx);
-
-        // Display selected WAN info
-        if (selected === 'combined') {
-          const ips = wans.map(w => w.wan_ip).filter(Boolean).join(' / ');
-          $('#wanIp').textContent = ips ? `(${ips})` : '';
-          const statuses = wans.map(w => w.status).filter(Boolean);
-          $('#wanStatus').textContent = statuses.length ? statuses.join(' / ') : '';
-          $('#rxNow').textContent = fmtRate(combRx);
-          $('#txNow').textContent = fmtRate(combTx);
-        } else {
-          const cur = wans.find(w => w.name === selected);
-          if (cur) {
-            $('#wanIp').textContent = cur.wan_ip ? `(IP ${cur.wan_ip})` : '';
-            $('#wanStatus').textContent = cur.status ? `status: ${cur.status}` : '';
-            $('#rxNow').textContent = fmtRate(cur.rx_bps);
-            $('#txNow').textContent = fmtRate(cur.tx_bps);
-          }
         }
 
         if (!wanPaused) drawWanChart();

@@ -35,6 +35,7 @@ unifiUI/
 - **XSS захист**: Всі API дані escaped через `esc()` на фронтенді
 - **TLS**: Підтримка self-signed сертифікатів через `UNSAFE_TLS`
 - **WAN графік**: Canvas-based, 60 точок (~1хв при 1Hz polling)
+- **Multi-WAN**: Назви WAN інтерфейсів з Integration v1 (Astra, LinkCOM) + per-WAN latency з legacy uptime_stats
 - **Thread-safe site ID**: `sync.RWMutex` для мутабельного default site
 - **Graceful shutdown**: SIGINT/SIGTERM → 5s timeout
 
@@ -47,7 +48,8 @@ unifiUI/
 | POST | `/api/site` | Встановити дефолтний сайт |
 | GET | `/api/clients` | Список клієнтів |
 | GET | `/api/devices` | Список пристроїв |
-| GET | `/api/wan/health` | WAN статус та швидкість |
+| GET | `/api/wan/health` | WAN статус, трафік, per-WAN latency |
+| GET | `/api/wan/raw` | Debug: raw WAN дані з обох API |
 | POST | `/api/clients/{id}/authorize` | Авторизація гостя |
 
 ## Збірка та запуск
@@ -69,3 +71,4 @@ docker run -e UNIFI_API_KEY=xxx -p 5173:5173 unifiui
 - Додано Dockerfile (multi-stage, scratch)
 - Вбудований healthcheck для Docker
 - Graceful shutdown
+- Multi-WAN: aggregate трафік + per-WAN latency + назви з Integration v1

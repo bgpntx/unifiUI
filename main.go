@@ -344,7 +344,7 @@ func (s *server) handleGetDevices(w http.ResponseWriter, r *http.Request) {
 	w.Write(data)
 }
 
-// Current WAN rates (bytes/sec) + basic status — returns all WAN interfaces
+// Current WAN rates (bytes/sec) + per-WAN uptime stats
 func (s *server) handleWanHealth(w http.ResponseWriter, r *http.Request) {
 	siteID := s.getSiteID(r)
 	raw, err := s.udr.getWanHealth(siteID)
@@ -362,27 +362,87 @@ func (s *server) handleWanHealth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Collect all WAN subsystems (wan, wan2, etc.)
-	var wans []map[string]any
+	// Find wan subsystem (UDR aggregates all WANs into one subsystem)
+	var wanSub map[string]any
 	for _, item := range resp.Data {
-		sub, _ := item["subsystem"].(string)
-		if strings.HasPrefix(sub, "wan") {
-			entry := map[string]any{
-				"name":   sub,
-				"rx_bps": item["rx_bytes-r"],
-				"tx_bps": item["tx_bytes-r"],
-				"wan_ip": item["wan_ip"],
-				"status": item["status"],
+		if item["subsystem"] == "wan" {
+			wanSub = item
+			break
+		}
+	}
+	if wanSub == nil {
+		wanSub = map[string]any{}
+	}
+
+	// Aggregate traffic (covers all WANs combined)
+	result := map[string]any{
+		"ts":     time.Now().UnixMilli(),
+		"rx_bps": wanSub["rx_bytes-r"],
+		"tx_bps": wanSub["tx_bytes-r"],
+		"wan_ip": wanSub["wan_ip"],
+		"status": wanSub["status"],
+	}
+
+	// Extract per-WAN uptime stats (latency, availability)
+	if uptimeRaw, ok := wanSub["uptime_stats"].(map[string]any); ok {
+		perWan := []map[string]any{}
+		for name, data := range uptimeRaw {
+			entry := map[string]any{"name": name}
+			if m, ok := data.(map[string]any); ok {
+				entry["latency"] = m["latency_average"]
+				entry["availability"] = m["availability"]
 			}
-			wans = append(wans, entry)
+			perWan = append(perWan, entry)
+		}
+		result["per_wan"] = perWan
+	}
+
+	// Fetch Integration v1 WAN names (Astra, LinkCOM, etc.)
+	wansRaw, err := s.udr.get("/sites/" + siteID + "/wans")
+	if err == nil {
+		var wansResp struct {
+			Data []struct {
+				ID   string `json:"id"`
+				Name string `json:"name"`
+			} `json:"data"`
+		}
+		if json.Unmarshal(wansRaw, &wansResp) == nil {
+			names := []map[string]string{}
+			for _, w := range wansResp.Data {
+				names = append(names, map[string]string{"id": w.ID, "name": w.Name})
+			}
+			result["wan_interfaces"] = names
 		}
 	}
 
-	result := map[string]any{
-		"ts":          time.Now().UnixMilli(),
-		"wans":        wans,
-		"legacy_site": s.udr.getLegacySiteName(siteID),
+	writeJSON(w, http.StatusOK, result)
+}
+
+// Debug: raw WAN data from both legacy and Integration v1
+func (s *server) handleWanRaw(w http.ResponseWriter, r *http.Request) {
+	siteID := s.getSiteID(r)
+	result := map[string]any{"siteId": siteID}
+
+	// Legacy stat/health — all subsystems
+	raw, err := s.udr.getWanHealth(siteID)
+	if err != nil {
+		result["legacy_error"] = err.Error()
+	} else {
+		var parsed any
+		json.Unmarshal(raw, &parsed)
+		result["legacy_stat_health"] = parsed
 	}
+
+	// Integration v1 WAN interfaces list
+	wansRaw, err := s.udr.get("/sites/" + siteID + "/wans")
+	if err != nil {
+		result["v1_wans_error"] = err.Error()
+	} else {
+		var parsed any
+		json.Unmarshal(wansRaw, &parsed)
+		result["v1_wans"] = parsed
+	}
+
 	writeJSON(w, http.StatusOK, result)
 }
 
@@ -540,6 +600,7 @@ func main() {
 	mux.HandleFunc("GET /api/clients", srv.handleGetClients)
 	mux.HandleFunc("GET /api/devices", srv.handleGetDevices)
 	mux.HandleFunc("GET /api/wan/health", srv.handleWanHealth)
+	mux.HandleFunc("GET /api/wan/raw", srv.handleWanRaw)
 	mux.HandleFunc("POST /api/clients/{clientId}/authorize", srv.handleAuthorize)
 
 	// Static files (embedded, strip "public" prefix)
